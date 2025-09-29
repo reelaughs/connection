@@ -1,0 +1,264 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Connection — Clean</title>
+  <style>
+    body{margin:0;background:#07090c;color:#e8ecf1;font-family:system-ui,Inter,Arial}
+    .hud{
+      position:fixed;left:12px;top:12px;display:flex;gap:8px;align-items:center;
+      background:#0d1218;border:1px solid #1e2733;border-radius:12px;padding:10px 12px
+    }
+    .btn{background:#0f141a;border:1px solid #273141;color:#e8ecf1;border-radius:8px;padding:6px 10px;cursor:pointer}
+    .caption{
+      position:fixed;left:14px;bottom:14px;opacity:.85;
+      background:#0d1218;border:1px solid #1e2733;border-radius:10px;
+      padding:8px 12px;font-size:13px;line-height:1.4
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <button id="rewindBtn" class="btn">⟲ Rewind (R)</button>
+  </div>
+  <div class="caption">
+    “Connection” — growth only happens when two forms meet in the right way.
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script>
+    // --- Config tweaks for denser feel
+    const FORMS = ["circle","triangle","square"];
+    const COMPAT = new Set(["circle-triangle","triangle-square","square-circle"]);
+    const N = 48;                         // more shapes to showcase all 3 groups
+    const MAX_R = 42;                     // tighter cap so the field stays readable
+    const MIN_R = 7;                      // slightly smaller floor
+    const POSITIVE_GROWTH = 1.25;
+    const NEGATIVE_SHRINK = 0.88;
+    const POSITIVE_FLASH_FRAMES = 60;
+    const NEGATIVE_FLASH_FRAMES = 20;
+    const PAIR_EVENT_COOLDOWN = 26;
+    const REPULSE_STRENGTH = 0.08;
+    const LINE_GLOW_DURATION = 22;
+
+    let beings = [];
+    let initialState = null;
+    let pairCooldown = new Map();
+
+    const keyPair = (i,j) => i<j ? `${i}-${j}` : `${j}-${i}`;
+    function polygon(x,y,r,n){
+      beginShape();
+      for (let a=0; a<TWO_PI; a+=TWO_PI/n){
+        vertex(x + r*cos(a), y + r*sin(a));
+      }
+      endShape(CLOSE);
+    }
+    function inCompat(aForm, bForm){
+      return COMPAT.has(aForm+"-"+bForm) || COMPAT.has(bForm+"-"+aForm);
+    }
+
+    class Being {
+      constructor(id, small=true){
+        this.id = id;
+        this.pos = createVector(random(width), random(height));
+        this.vel = p5.Vector.fromAngle(random(TWO_PI)).mult(random(0.7,1.8));
+        this.form = random(FORMS);
+        this.formClock = random(0,1000);
+
+        const base = small ? random(8,12) : random(10,16);
+        this.baseR = base;
+        this.r = base;
+
+        this.state = "neutral"; // neutral | positive | negative
+        this.stateTimer = 0;
+        this.pulseTimer = 0;
+        this.lineGlowTimer = 0;
+
+        // 3 groups: 0 = never shrink, 1 = 50% shrink, 2 = always shrink
+        const rnd = random();
+        this.negGroup = rnd < 1/3 ? 0 : (rnd < 2/3 ? 1 : 2);
+      }
+
+      snapshot(){
+        return {
+          id: this.id,
+          x: this.pos.x, y: this.pos.y,
+          vx: this.vel.x, vy: this.vel.y,
+          form: this.form,
+          formClock: this.formClock,
+          baseR: this.baseR,
+          r: this.r,
+          negGroup: this.negGroup
+        };
+      }
+      restore(snap, randomizeVelocity=true){
+        this.id = snap.id;
+        this.pos.set(snap.x, snap.y);
+        if (randomizeVelocity){
+          this.vel = p5.Vector.fromAngle(random(TWO_PI)).mult(random(0.7,1.8));
+        } else {
+          this.vel.set(snap.vx, snap.vy);
+        }
+        this.form = snap.form;
+        this.formClock = snap.formClock;
+        this.baseR = snap.baseR;
+        this.r = snap.r;
+        this.negGroup = snap.negGroup;
+
+        this.state = "neutral";
+        this.stateTimer = 0;
+        this.pulseTimer = 0;
+        this.lineGlowTimer = 0;
+      }
+
+      onPositive(){
+        this.state = "positive";
+        this.stateTimer = POSITIVE_FLASH_FRAMES;
+        this.pulseTimer = 22;
+        this.lineGlowTimer = LINE_GLOW_DURATION;
+        this.baseR = constrain(this.baseR * POSITIVE_GROWTH, MIN_R, MAX_R);
+      }
+      onNegative(){
+        this.state = "negative";
+        this.stateTimer = NEGATIVE_FLASH_FRAMES;
+        if (this.negGroup === 2 || (this.negGroup === 1 && random() < 0.5)){
+          this.baseR = constrain(this.baseR * NEGATIVE_SHRINK, MIN_R, MAX_R);
+        }
+      }
+
+      update(){
+        this.pos.add(this.vel);
+        const n = noise(this.pos.x*0.0009, this.pos.y*0.0009, frameCount*0.001);
+        this.vel.rotate((n-0.5) * 0.12);
+
+        // wrap
+        if (this.pos.x < -30) this.pos.x = width+30;
+        if (this.pos.x > width+30) this.pos.x = -30;
+        if (this.pos.y < -30) this.pos.y = height+30;
+        if (this.pos.y > height+30) this.pos.y = -30;
+
+        // morph
+        this.formClock += 0.01;
+        const fIdx = Math.floor((noise(this.formClock)*FORMS.length)) % FORMS.length;
+        this.form = FORMS[fIdx];
+
+        // timers
+        if (this.stateTimer > 0) this.stateTimer--;
+        if (this.pulseTimer > 0) this.pulseTimer--;
+        if (this.lineGlowTimer > 0) this.lineGlowTimer--;
+        if (this.stateTimer === 0 && this.state !== "neutral") this.state = "neutral";
+
+        // ease radius toward base, with pulse bump
+        const target = this.baseR + (this.pulseTimer > 0 ? 6 * (this.pulseTimer/22) : 0);
+        this.r = lerp(this.r, target, 0.15);
+      }
+
+      draw(){
+        push();
+        translate(this.pos.x, this.pos.y);
+
+        let strokeCol = color(230,235,242, 170);
+        if (this.state === "positive") strokeCol = color('#39FF14');
+        if (this.state === "negative") strokeCol = color('#FF3131');
+
+        stroke(strokeCol);
+        strokeWeight(this.state === "positive" ? 2.4 : (this.state === "negative" ? 2.0 : 1.2));
+        fill(20,26,33, this.state === "positive" ? 85 : (this.state === "negative" ? 55 : 24));
+
+        if (this.form === "circle"){
+          ellipse(0,0,this.r*2,this.r*2);
+        } else if (this.form === "triangle"){
+          polygon(0,0, this.r, 3);
+        } else {
+          rectMode(CENTER);
+          rect(0,0, this.r*1.8, this.r*1.8, 4);
+        }
+        pop();
+      }
+    }
+
+    function createBeings(){
+      beings = [];
+      for (let i=0;i<N;i++) beings.push(new Being(i, true));
+    }
+    function snapshotAll(){ return beings.map(b => b.snapshot()); }
+    function restoreAll(randomizeVelocity=true){ beings.forEach((b,i)=>b.restore(initialState[i], randomizeVelocity)); }
+
+    function setup(){
+      createCanvas(window.innerWidth, window.innerHeight);
+      noFill(); stroke(220);
+      createBeings();
+      initialState = snapshotAll();
+      document.getElementById('rewindBtn').onclick = rewind;
+    }
+    function windowResized(){ resizeCanvas(window.innerWidth, window.innerHeight); }
+
+    function rewind(){
+      restoreAll(true);
+      beings.forEach(b=>{
+        b.pos.add(p5.Vector.fromAngle(random(TWO_PI)).mult(random(0,8)));
+      });
+      pairCooldown.clear();
+    }
+    function keyPressed(){ if (key === 'R') rewind(); }
+
+    function draw(){
+      background(7,9,12, 28);
+
+      // decrement pair cooldowns
+      for (const [k,v] of pairCooldown.entries()){
+        const nv = v-1;
+        if (nv <= 0) pairCooldown.delete(k); else pairCooldown.set(k, nv);
+      }
+
+      // interactions
+      for (let i=0;i<beings.length;i++){
+        for (let j=i+1;j<beings.length;j++){
+          const a = beings[i], b = beings[j];
+          const d = p5.Vector.dist(a.pos, b.pos);
+          const minD = a.r + b.r;
+
+          if (d < minD){
+            const k = keyPair(i,j);
+            const cooled = !pairCooldown.has(k);
+
+            if (inCompat(a.form, b.form)){
+              if (cooled){
+                a.onPositive(); b.onPositive();
+                pairCooldown.set(k, PAIR_EVENT_COOLDOWN);
+              }
+              const dir = p5.Vector.sub(a.pos, b.pos).setMag((minD - d) * 0.03);
+              a.pos.add(dir); b.pos.sub(dir);
+            } else {
+              if (cooled){
+                a.onNegative(); b.onNegative();
+                pairCooldown.set(k, PAIR_EVENT_COOLDOWN);
+              }
+              const dir = p5.Vector.sub(a.pos, b.pos).setMag((minD - d) * (0.06 + REPULSE_STRENGTH));
+              a.pos.add(dir); b.pos.sub(dir);
+              a.vel.add(dir.copy().setMag(0.02));
+              b.vel.sub(dir.copy().setMag(0.02));
+            }
+          }
+        }
+      }
+
+      // faint connective lines for recent positives
+      stroke(140,170,255, 40);
+      strokeWeight(1);
+      for (let i=0;i<beings.length;i++){
+        for (let j=i+1;j<beings.length;j++){
+          const a = beings[i], b = beings[j];
+          if ((a.lineGlowTimer>0 || b.lineGlowTimer>0) && inCompat(a.form,b.form)){
+            const d = p5.Vector.dist(a.pos, b.pos);
+            if (d < 160) line(a.pos.x, a.pos.y, b.pos.x, b.pos.y);
+          }
+        }
+      }
+
+      beings.forEach(b => { b.update(); b.draw(); });
+    }
+  </script>
+</body>
+</html>
